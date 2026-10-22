@@ -1,0 +1,279 @@
+
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>DOOM PIXEL</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#090909;color:#eee;font-family:monospace;overflow:hidden}
+button,input,select{font:inherit;padding:11px;border:2px solid #b22;background:#181818;color:white;border-radius:5px}
+button{cursor:pointer}
+button:active{background:#8b1111}
+#menu{position:absolute;inset:0;overflow:auto;background:radial-gradient(#381010,#080808 70%);display:flex;align-items:center;justify-content:center;padding:16px}
+.panel{width:min(460px,100%);border:2px solid #c22;background:#101010;padding:20px;box-shadow:0 0 28px #600;text-align:center}
+h1{color:#ff3434;font-size:clamp(32px,9vw,52px);margin:5px;text-shadow:3px 3px #510000}
+.sub{color:#aaa;margin:8px 0 20px}
+input,select{width:100%;margin:5px 0}
+.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.wide{width:100%;margin-top:8px}
+#status{color:#ffbd59;min-height:25px;margin-top:10px}
+#game{display:none;position:fixed;inset:0;background:#151515}
+canvas{width:100%;height:100%;display:block;image-rendering:pixelated}
+#hud{position:absolute;top:8px;left:8px;right:8px;display:flex;justify-content:space-between;gap:8px;pointer-events:none;text-shadow:2px 2px #000;font-weight:bold}
+#hud span{background:#000b;padding:8px;border:1px solid #733}
+#controls{position:absolute;bottom:14px;left:12px;right:12px;display:flex;justify-content:space-between;align-items:end;pointer-events:none}
+.pad{display:grid;grid-template-columns:48px 48px 48px;grid-template-rows:48px 48px 48px;gap:3px;pointer-events:auto}
+.pad button,.fire{background:#351111dd;border:2px solid #d44;touch-action:none;user-select:none}
+.pad button:nth-child(1){grid-column:2;grid-row:1}
+.pad button:nth-child(2){grid-column:1;grid-row:2}
+.pad button:nth-child(3){grid-column:2;grid-row:2}
+.pad button:nth-child(4){grid-column:3;grid-row:2}
+.pad button:nth-child(5){grid-column:2;grid-row:3}
+.rightControls{display:flex;flex-direction:column;gap:8px;pointer-events:auto}
+.fire{width:90px;height:72px;font-weight:bold}
+.small{font-size:12px;color:#bbb}
+</style>
+</head>
+<body>
+<div id="menu">
+ <div class="panel">
+  <h1>DOOM PIXEL</h1>
+  <div class="sub">PIXEL ARENA · SURVIVE THE FIGHT</div>
+  <input id="name" maxlength="18" placeholder="نام بازیکن" value="PLAYER">
+  <div class="actions">
+   <button id="offline">بازی آفلاین</button>
+   <button id="create">ساخت اتاق آنلاین</button>
+  </div>
+  <input id="roomCode" maxlength="6" inputmode="numeric" placeholder="کد اتاق برای ورود">
+  <button id="join" class="wide">ورود به اتاق</button>
+  <div id="lobby" hidden>
+   <p>کد اتاق: <strong id="codeLabel"></strong></p>
+   <label>تعداد بات‌ها</label>
+   <select id="botCount">
+    <option>0</option><option>5</option><option>10</option>
+    <option>15</option><option>20</option><option>25</option><option selected>30</option>
+   </select>
+   <label>تیم من</label>
+   <select id="team">
+    <option value="Red">قرمز</option>
+    <option value="Blue">آبی</option>
+   </select>
+   <button id="apply" class="wide">ثبت تنظیمات</button>
+   <button id="start" class="wide">شروع مسابقه</button>
+   <div id="roster"></div>
+  </div>
+  <div id="status">آمادهٔ نبرد؟</div>
+  <p class="small">آفلاین بدون اینترنت · بازی آنلاین نیازمند سرور فعال است.</p>
+ </div>
+</div>
+
+<div id="game">
+ <canvas id="screen"></canvas>
+ <div id="hud">
+  <span id="health">HP: 100</span>
+  <span id="score">SCORE: 0</span>
+  <span id="mode">OFFLINE</span>
+  <button id="exit" style="pointer-events:auto;padding:5px">خروج</button>
+ </div>
+ <div id="controls">
+  <div class="pad">
+   <button data-move="up">▲</button>
+   <button data-move="left">◀</button>
+   <button data-move="stop">●</button>
+   <button data-move="right">▶</button>
+   <button data-move="down">▼</button>
+  </div>
+  <div class="rightControls">
+   <button class="fire" id="shoot">FIRE 🔥</button>
+   <button class="fire" id="reload">RELOAD ↻</button>
+  </div>
+ </div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const canvas=$("screen"),ctx=canvas.getContext("2d");
+let ws=null,online=false,host=false,room="",myId="";
+let running=false,keys={},touch={},last=0;
+let player={x:400,y:300,hp:100,angle:0,score:0,team:"Red"};
+let enemies=[],remote=[],bullets=[],ammo=12;
+let moveDir={x:0,y:0};
+let lastShot=0;
+
+function status(t){$("status").textContent=t}
+function send(obj){
+ if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify(obj));
+}
+function connect(){
+ return new Promise((resolve,reject)=>{
+  const proto=location.protocol==="https:"?"wss:":"ws:";
+  ws=new WebSocket(proto+"//"+location.host);
+  ws.onopen=()=>resolve();
+  ws.onerror=()=>reject(new Error("اتصال به سرور برقرار نشد"));
+  ws.onclose=()=>{if(online)status("اتصال آنلاین قطع شد")};
+  ws.onmessage=e=>{
+   let m;try{m=JSON.parse(e.data)}catch{return}
+   if(m.type==="error")status(m.message);
+   if(m.type==="joined"){
+    myId=m.id;room=m.code;host=m.host;
+    $("codeLabel").textContent=room;
+    $("lobby").hidden=false;
+    status("اتاق ساخته شد؛ کد را به دوستانت بده");
+   }
+   if(m.type==="state"){
+    remote=m.players.filter(p=>p.id!==myId);
+    enemies=m.bots||[];
+    const me=m.players.find(p=>p.id===myId);
+    if(me){player.x=me.x;player.y=me.y;player.hp=me.hp;player.score=me.score;player.team=me.team}
+    $("roster").innerHTML="بازیکنان: "+m.players.length+"/10 · بات‌ها: "+m.bots.length+"/30";
+    if(m.started&&!running)begin(true);
+   }
+  };
+ });
+}
+async function onlineAction(type,extra={}){
+ try{
+  if(!ws||ws.readyState!==WebSocket.OPEN)await connect();
+  send({type,...extra});
+ }catch(e){status(e.message+"؛ ابتدا سرور را راه‌اندازی کن")}
+}
+$("create").onclick=()=>onlineAction("create",{name:$("name").value.trim()||"PLAYER"});
+$("join").onclick=()=>onlineAction("join",{name:$("name").value.trim()||"PLAYER",code:$("roomCode").value.trim()});
+$("apply").onclick=()=>{
+ send({type:"team",team:$("team").value});
+ send({type:"bots",count:Number($("botCount").value)});
+ status("تنظیمات ارسال شد");
+};
+$("start").onclick=()=>send({type:"start"});
+
+function makeEnemy(i){
+ return {id:"offline-"+i,x:35+Math.random()*730,y:35+Math.random()*530,
+ hp:100,alive:true,team:i%2?"Blue":"Red",score:0,angle:0};
+}
+function begin(isOnline=false){
+ online=isOnline;
+ running=true;
+ $("menu").style.display="none";
+ $("game").style.display="block";
+ $("mode").textContent=online?"ONLINE":"OFFLINE";
+ if(!online){
+  player={x:400,y:300,hp:100,angle:0,score:0,team:"Red"};
+  enemies=Array.from({length:8},(_,i)=>makeEnemy(i));
+  remote=[];bullets=[];ammo=12;
+ }
+ resize();last=performance.now();requestAnimationFrame(loop);
+}
+$("offline").onclick=()=>begin(false);
+$("exit").onclick=()=>{
+ running=false;$("game").style.display="none";$("menu").style.display="flex";
+ if(ws)ws.close();ws=null;online=false;room="";
+};
+function resize(){
+ const d=Math.min(devicePixelRatio||1,2);
+ canvas.width=Math.floor(innerWidth*d);canvas.height=Math.floor(innerHeight*d);
+ ctx.setTransform(d,0,0,d,0,0);
+}
+addEventListener("resize",resize);
+
+function move(x,y){
+ const speed=2.6;
+ player.x=Math.max(12,Math.min(788,player.x+x*speed));
+ player.y=Math.max(12,Math.min(588,player.y+y*speed));
+ player.angle=Math.atan2(y,x);
+}
+document.querySelectorAll("[data-move]").forEach(b=>{
+ const dir=b.dataset.move;
+ const set=(v)=>{
+  if(dir==="up")touch.y=v?-1:0;
+  if(dir==="down")touch.y=v?1:0;
+  if(dir==="left")touch.x=v?-1:0;
+  if(dir==="right")touch.x=v?1:0;
+  if(dir==="stop"){touch.x=0;touch.y=0}
+ };
+ b.addEventListener("pointerdown",e=>{e.preventDefault();b.setPointerCapture(e.pointerId);set(true)});
+ b.addEventListener("pointerup",()=>set(false));
+ b.addEventListener("pointercancel",()=>set(false));
+});
+addEventListener("keydown",e=>{keys[e.key.toLowerCase()]=true});
+addEventListener("keyup",e=>{keys[e.key.toLowerCase()]=false});
+
+function fire(){
+ if(!running||performance.now()-lastShot<220)return;
+ lastShot=performance.now();
+ if(online){
+  const all=[...remote,...enemies].filter(e=>e.alive&&e.team!==player.team);
+  all.sort((a,b)=>Math.hypot(a.x-player.x,a.y-player.y)-Math.hypot(b.x-player.x,b.y-player.y));
+  if(all[0])send({type:"shoot",target:all[0].id});
+  return;
+ }
+ if(ammo<=0){return}
+ ammo--;
+ let targets=enemies.filter(e=>e.alive&&e.team!=="Red");
+ targets.sort((a,b)=>Math.hypot(a.x-player.x,a.y-player.y)-Math.hypot(b.x-player.x,b.y-player.y));
+ const t=targets[0];
+ if(t&&Math.hypot(t.x-player.x,t.y-player.y)<260){
+  t.hp-=35;
+  if(t.hp<=0){t.alive=false;player.score++}
+ }
+}
+$("shoot").addEventListener("pointerdown",e=>{e.preventDefault();fire()});
+$("reload").onclick=()=>{ammo=12};
+function update(dt){
+ let x=(keys.d||keys.arrowright?1:0)-(keys.a||keys.arrowleft?1:0)+ (touch.x||0);
+ let y=(keys.s||keys.arrowdown?1:0)-(keys.w||keys.arrowup?1:0)+ (touch.y||0);
+ if(x||y){
+  const l=Math.hypot(x,y)||1;x/=l;y/=l;
+  player.x=Math.max(12,Math.min(788,player.x+x*dt*.17));
+  player.y=Math.max(12,Math.min(588,player.y+y*dt*.17));
+  player.angle=Math.atan2(y,x);
+ }
+ if(online){
+  if(Math.random()<.3)send({type:"move",x:player.x,y:player.y,angle:player.angle,hp:player.hp});
+  return;
+ }
+ for(const e of enemies){
+  if(!e.alive)continue;
+  const dx=player.x-e.x,dy=player.y-e.y,d=Math.hypot(dx,dy)||1;
+  e.angle=Math.atan2(dy,dx);
+  if(d>28){e.x+=dx/d*dt*.035;e.y+=dy/d*dt*.035}
+  else if(Math.random()<.02){player.hp=Math.max(0,player.hp-3)}
+ }
+ if(player.hp<=0){player.hp=100;player.x=400;player.y=300;player.score=Math.max(0,player.score-1)}
+ if(enemies.every(e=>!e.alive)){
+  enemies=Array.from({length:8},(_,i)=>makeEnemy(i));
+  player.hp=100;
+ }
+}
+function drawEntity(e,color,size=14){
+ ctx.save();ctx.translate(e.x/800*innerWidth,e.y/600*innerHeight);
+ ctx.rotate(e.angle||0);
+ ctx.fillStyle=color;ctx.fillRect(-size/2,-size/2,size,size);
+ ctx.fillStyle="#fff";ctx.fillRect(0,-3,size*.8,5);
+ ctx.restore();
+}
+function draw(){
+ const w=innerWidth,h=innerHeight;
+ ctx.fillStyle="#171717";ctx.fillRect(0,0,w,h);
+ const cell=32;
+ for(let x=0;x<w;x+=cell)for(let y=0;y<h;y+=cell){
+  ctx.fillStyle=((x/cell+y/cell)%2)?"#1b1b1b":"#202020";
+  ctx.fillRect(x,y,cell-1,cell-1);
+ }
+ ctx.strokeStyle="#493030";ctx.lineWidth=4;ctx.strokeRect(4,4,w-8,h-8);
+ enemies.forEach(e=>{if(e.alive)drawEntity(e,e.team==="Red"?"#ff3333":"#348cff",16)});
+ remote.forEach(e=>drawEntity(e,e.team==="Red"?"#ff3333":"#348cff",18));
+ drawEntity(player,"#f5e6c8",18);
+ $("health").textContent="HP: "+player.hp;
+ $("score").textContent="SCORE: "+player.score+" · AMMO: "+ammo;
+}
+function loop(now){
+ if(!running)return;
+ const dt=Math.min(50,now-last);last=now;
+ update(dt);draw();
+ requestAnimationFrame(loop);
+}
+</script>
+</body>
+</html>
